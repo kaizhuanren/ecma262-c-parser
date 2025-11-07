@@ -28,7 +28,8 @@ SRC := \
 OBJS := $(SRC:%.c=build/obj/%.o) $(LEXER_GEN:%.c=build/obj/%.o) $(PARSER_GEN:%.c=build/obj/%.o)
 
 TARGET := build/bin/jsparser
-TEST_CASES := $(wildcard tests/cases/*.js)
+VALID_TEST_CASES := $(wildcard tests/cases/valid/*.js)
+INVALID_TEST_CASES := $(wildcard tests/cases/invalid/*.js)
 
 .PHONY: all clean distclean generated_dirs test
 
@@ -64,7 +65,14 @@ distclean: clean
 
 test: $(TARGET)
 	@set -e; \
-	for file in $(TEST_CASES); do \
-		echo "[test] $$file"; \
+	for file in $(VALID_TEST_CASES); do \
+		echo "[test][valid] $$file"; \
 		$(TARGET) "$$file" >/dev/null; \
+	done; \
+	for file in $(INVALID_TEST_CASES); do \
+		echo "[test][invalid] $$file"; \
+		if $(TARGET) "$$file" >/dev/null 2>&1; then \
+			echo "Expected failure but parser succeeded: $$file"; \
+			exit 1; \
+		fi; \
 	done

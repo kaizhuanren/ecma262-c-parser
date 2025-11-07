@@ -31,7 +31,10 @@ Execute the parser against the bundled test cases:
 make test
 ```
 
-This target runs the CLI on every `.js` file located under `tests/cases/`.
+This target runs the CLI on every `.js` file located under
+`tests/cases/valid/` and expects each run to succeed. It also executes the
+parser against every sample in `tests/cases/invalid/` and fails the test suite
+if any of those files parse without reporting an error.
 
 ## 4. Manual Checks
 
