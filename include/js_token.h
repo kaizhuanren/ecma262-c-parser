@@ -7,6 +7,13 @@
 #include "js_source.h"
 
 typedef enum {
+    JS_ASI_REASON_NONE = 0,
+    JS_ASI_REASON_LINE_TERMINATOR,
+    JS_ASI_REASON_CLOSING_BRACE,
+    JS_ASI_REASON_EOF
+} js_asi_reason_t;
+
+typedef enum {
     JS_TOK_EOF = 0,
     JS_TOK_ERROR,
 
@@ -131,6 +138,8 @@ typedef struct {
     js_source_location_t location;
     bool preceded_by_newline;
     double number_value;
+    bool inserted_via_asi;
+    js_asi_reason_t asi_reason;
 } js_token_t;
 
 #endif /* JS_TOKEN_H */

@@ -53,6 +53,8 @@ $(PARSER_GEN) $(PARSER_HEADER): $(PARSER_Y) | generated_dirs
 build/obj/%.o: %.c | generated_dirs
 	$(CC) $(CFLAGS) -c $< -o $@
 
+build/obj/src/parser/parser_driver.o: $(PARSER_HEADER)
+
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $@ $(LDFLAGS)
 

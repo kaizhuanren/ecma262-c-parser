@@ -1,8 +1,13 @@
 #include "parser_internal.h"
+#include "js_parser.h"
 
 #include <stdlib.h>
 
 extern int js_parser_implparse(js_parser_context_t *ctx);
+
+#if YYDEBUG
+extern int js_parser_impldebug;
+#endif
 
 js_parser_context_t *js_parser_create(js_diagnostic_callback_t callback, void *user_data) {
     js_parser_context_t *ctx = (js_parser_context_t *)calloc(1, sizeof(js_parser_context_t));
@@ -62,4 +67,12 @@ bool js_parser_parse(js_parser_context_t *ctx, const char *source, js_ast_node_t
     *program_out = ctx->result;
     ctx->result = NULL;
     return true;
+}
+
+void js_parser_set_debug(bool enabled) {
+#if YYDEBUG
+    js_parser_impldebug = enabled ? 1 : 0;
+#else
+    (void)enabled;
+#endif
 }

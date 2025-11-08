@@ -45,6 +45,7 @@ static void js_parser_implerror(YYLTYPE *loc, js_parser_context_t *ctx, const ch
 %define api.pure full
 %define api.prefix {js_parser_impl}
 %define parse.error verbose
+%define parse.trace
 %locations
 
 %parse-param { js_parser_context_t *ctx }
@@ -1463,6 +1464,10 @@ static int js_parser_impllex(YYSTYPE *yylval, YYLTYPE *yylloc, js_parser_context
             return '!';
         case JS_TOK_BIT_NOT:
             return '~';
+        case JS_TOK_QUESTION:
+            return '?';
+        case JS_TOK_COLON:
+            return ':';
         default:
             parser_report(ctx, yylloc, "Unsupported token in grammar");
             return 0;

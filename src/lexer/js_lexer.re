@@ -40,6 +40,8 @@ static void js_lexer_set_token(js_lexer_t *lexer, js_token_t *out_token, js_toke
     out_token->location.column = lexer->state.token_column;
     out_token->preceded_by_newline = lexer->state.prev_had_newline;
     out_token->number_value = 0.0;
+    out_token->inserted_via_asi = false;
+    out_token->asi_reason = JS_ASI_REASON_NONE;
     js_lexer_update_position(lexer, start, end);
 }
 

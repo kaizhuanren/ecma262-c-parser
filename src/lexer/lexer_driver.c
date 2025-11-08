@@ -142,7 +142,7 @@ bool js_lexer_reset(js_lexer_t *lexer, const char *source) {
     return true;
 }
 
-static void make_semicolon_token(js_lexer_t *lexer, js_token_t *out_token) {
+static void make_semicolon_token(js_lexer_t *lexer, js_token_t *out_token, js_asi_reason_t reason) {
     out_token->kind = JS_TOK_SEMICOLON;
     out_token->lexeme = ";";
     out_token->length = 1;
@@ -150,6 +150,8 @@ static void make_semicolon_token(js_lexer_t *lexer, js_token_t *out_token) {
     out_token->location.column = lexer->state.current_column;
     out_token->preceded_by_newline = false;
     out_token->number_value = 0.0;
+    out_token->inserted_via_asi = true;
+    out_token->asi_reason = reason;
 }
 
 bool js_lexer_next(js_lexer_t *lexer, js_token_t *out_token) {
@@ -210,7 +212,13 @@ bool js_lexer_next(js_lexer_t *lexer, js_token_t *out_token) {
         lexer->lookahead_token = token;
         lexer->has_lookahead = true;
         lexer->force_semi_after_keyword = false;
-        make_semicolon_token(lexer, out_token);
+        js_asi_reason_t reason = JS_ASI_REASON_LINE_TERMINATOR;
+        if (token.kind == JS_TOK_RBRACE) {
+            reason = JS_ASI_REASON_CLOSING_BRACE;
+        } else if (token.kind == JS_TOK_EOF) {
+            reason = JS_ASI_REASON_EOF;
+        }
+        make_semicolon_token(lexer, out_token, reason);
         out_token->preceded_by_newline = newline;
         lexer->previous_token_kind = out_token->kind;
         return true;

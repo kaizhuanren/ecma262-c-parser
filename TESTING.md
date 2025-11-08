@@ -45,4 +45,12 @@ build/bin/jsparser path/to/file.js
 ```
 
 The program reports diagnostics to `stderr` and prints `Parsing succeeded.` on
-success. Non-zero exit codes indicate syntax or lexical errors.
+success. Non-zero exit codes indicate syntax or lexical errors. Combine the
+supported flags to explore different parser facets, for example:
+
+- `--tokens` – view the discovered token stream (line/column + lexeme).
+- `--asi` – list Automatic Semicolon Insertion points and reasons.
+- `--ast` or `--dot out.dot` – inspect the generated AST directly.
+- `--pretty` – output a normalized version of the input with semicolons emitted.
+- `--trace-parse` / `--trace-lex` – enable parser or lexer tracing (the latter
+  requires compiling with `-DDEBUG_TOKENS`).
