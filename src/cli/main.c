@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <limits.h>
 
 #ifdef DEBUG_TOKENS
 #define TRACE_LEX_SUPPORTED 1
@@ -26,12 +29,36 @@ typedef struct {
     bool trace_parse;
     bool trace_lex;
     bool help;
+    const char *scan_dir;
+    const char *log_path;
 } cli_options_t;
 
 typedef struct {
     FILE *stream;
     size_t next_id;
 } dot_ctx_t;
+
+typedef struct folder_stat_t {
+    char *path;
+    size_t success;
+    size_t failed;
+    struct folder_stat_t *next;
+} folder_stat_t;
+
+typedef struct {
+    bool seen;
+    char message[256];
+    uint32_t line;
+    uint32_t column;
+} captured_diag_t;
+
+typedef struct {
+    size_t total_js_files;
+    size_t processed;
+    FILE *log_file;
+    folder_stat_t *folders;
+    bool had_error;
+} scan_context_t;
 
 static size_t dot_emit_node(dot_ctx_t *ctx, const js_ast_node_t *node);
 static void dot_connect(dot_ctx_t *ctx, size_t parent, const js_ast_node_t *child);
@@ -43,6 +70,7 @@ static bool parse_arguments(int argc, char **argv, cli_options_t *options, const
 static char *read_source_file(const char *path, size_t *size_out);
 static bool run_lexer_modes(const char *source, const cli_options_t *options);
 static bool run_parser_modes(const char *source, const cli_options_t *options);
+static bool run_scan_mode(const cli_options_t *options);
 static const char *token_kind_name(js_token_kind_t kind);
 static void print_token_line(const char *prefix, const js_token_t *token);
 static void print_escaped_lexeme(FILE *out, const js_token_t *token);
@@ -63,6 +91,11 @@ static void pretty_print_expression(const js_ast_node_t *node, FILE *out);
 static void pretty_print_expression_list(const js_ast_node_list_t *list, FILE *out);
 static void pretty_print_variable_declaration(const js_ast_node_t *node, FILE *out, int indent, bool in_for_header);
 static bool write_dot_file(const js_ast_node_t *root, const char *path);
+static void free_folder_stats(folder_stat_t *head);
+static bool walk_directory(const char *path, bool (*on_file)(const char *, void *), void *user_data);
+static bool is_js_file(const char *path);
+static folder_stat_t *get_or_create_folder(folder_stat_t **head, const char *dir_path);
+static bool parse_file_for_scan(const char *path, captured_diag_t *diag_out);
 
 int main(int argc, char **argv) {
     cli_options_t options = {0};
@@ -75,6 +108,10 @@ int main(int argc, char **argv) {
     if (options.help) {
         print_usage(argv[0]);
         return EXIT_SUCCESS;
+    }
+
+    if (options.scan_dir) {
+        return run_scan_mode(&options) ? EXIT_SUCCESS : EXIT_FAILURE;
     }
 
     char *source = read_source_file(path, NULL);
@@ -109,6 +146,8 @@ static void print_usage(const char *prog_name) {
     fprintf(stderr, "  --pretty         Re-print the program with normalized formatting.\n");
     fprintf(stderr, "  --trace-parse    Enable the Bison parser trace (yydebug).\n");
     fprintf(stderr, "  --trace-lex      Trace lexer output (requires -DDEBUG_TOKENS).\n");
+    fprintf(stderr, "  --scan-dir <dir> Recursively parse every .js file under <dir> and report results.\n");
+    fprintf(stderr, "  --log <path>     Log scan results to <path> (used with --scan-dir, default: scan.log).\n");
     fprintf(stderr, "  --help           Show this message.\n");
 }
 
@@ -163,6 +202,18 @@ static bool parse_arguments(int argc, char **argv, cli_options_t *options, const
             fprintf(stderr, "--trace-lex requires building with -DDEBUG_TOKENS.\n");
             return false;
 #endif
+        } else if (strcmp(arg, "--scan-dir") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "--scan-dir requires a directory path.\n");
+                return false;
+            }
+            options->scan_dir = argv[++i];
+        } else if (strcmp(arg, "--log") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "--log requires a file path.\n");
+                return false;
+            }
+            options->log_path = argv[++i];
         } else if (arg[0] == '-') {
             fprintf(stderr, "Unknown option '%s'.\n", arg);
             return false;
@@ -173,6 +224,18 @@ static bool parse_arguments(int argc, char **argv, cli_options_t *options, const
             }
             *path_out = arg;
         }
+    }
+
+    if (options->scan_dir) {
+        if (*path_out) {
+            fprintf(stderr, "Cannot combine positional input file with --scan-dir.\n");
+            return false;
+        }
+        if (!options->log_path) {
+            options->log_path = "scan.log";
+        }
+        options->check = true;
+        return true;
     }
 
     if (!options->dot && options->dot_path) {
@@ -335,6 +398,260 @@ static bool run_parser_modes(const char *source, const cli_options_t *options) {
     js_ast_free(program);
     js_parser_destroy(ctx);
     return ok;
+}
+
+static void capture_diagnostic_callback(const js_diagnostic_t *diag, void *user_data) {
+    captured_diag_t *capture = (captured_diag_t *)user_data;
+    if (!capture || !diag) {
+        return;
+    }
+    capture->seen = true;
+    capture->line = diag->location.line;
+    capture->column = diag->location.column;
+    strncpy(capture->message, diag->message ? diag->message : "", sizeof(capture->message) - 1);
+    capture->message[sizeof(capture->message) - 1] = '\0';
+}
+
+static bool parse_file_for_scan(const char *path, captured_diag_t *diag_out) {
+    if (!path) {
+        return false;
+    }
+    captured_diag_t local_diag = {0};
+    if (diag_out) {
+        *diag_out = (captured_diag_t){0};
+    }
+
+    char *source = read_source_file(path, NULL);
+    if (!source) {
+        if (diag_out) {
+            diag_out->seen = true;
+            strncpy(diag_out->message, "Failed to read file", sizeof(diag_out->message) - 1);
+            diag_out->line = 0;
+            diag_out->column = 0;
+        }
+        return false;
+    }
+
+    js_parser_context_t *ctx = js_parser_create(capture_diagnostic_callback, &local_diag);
+    if (!ctx) {
+        free(source);
+        if (diag_out) {
+            diag_out->seen = true;
+            strncpy(diag_out->message, "Failed to create parser", sizeof(diag_out->message) - 1);
+        }
+        return false;
+    }
+
+    js_ast_node_t *program = NULL;
+    bool ok = js_parser_parse(ctx, source, &program);
+    js_ast_free(program);
+    js_parser_destroy(ctx);
+    free(source);
+
+    if (diag_out && local_diag.seen) {
+        *diag_out = local_diag;
+    }
+
+    if (!ok && diag_out && !diag_out->seen) {
+        diag_out->seen = true;
+        strncpy(diag_out->message, "Parse failed without diagnostic", sizeof(diag_out->message) - 1);
+    }
+    return ok;
+}
+
+static char *dup_string_slice(const char *start, size_t len) {
+    char *out = (char *)malloc(len + 1);
+    if (!out) {
+        return NULL;
+    }
+    memcpy(out, start, len);
+    out[len] = '\0';
+    return out;
+}
+
+static folder_stat_t *get_or_create_folder(folder_stat_t **head, const char *dir_path) {
+    folder_stat_t *node = *head;
+    while (node) {
+        if (strcmp(node->path, dir_path) == 0) {
+            return node;
+        }
+        node = node->next;
+    }
+    folder_stat_t *created = (folder_stat_t *)calloc(1, sizeof(folder_stat_t));
+    if (!created) {
+        return NULL;
+    }
+    created->path = strdup(dir_path);
+    if (!created->path) {
+        free(created);
+        return NULL;
+    }
+    created->next = *head;
+    *head = created;
+    return created;
+}
+
+static void free_folder_stats(folder_stat_t *head) {
+    while (head) {
+        folder_stat_t *next = head->next;
+        free(head->path);
+        free(head);
+        head = next;
+    }
+}
+
+static const char *dirname_from_path(const char *path, char *buffer, size_t buffer_size) {
+    if (!path || !buffer || buffer_size == 0) {
+        return ".";
+    }
+    const char *last_slash = strrchr(path, '/');
+    if (!last_slash) {
+        strncpy(buffer, ".", buffer_size - 1);
+        buffer[buffer_size - 1] = '\0';
+        return buffer;
+    }
+    size_t len = (size_t)(last_slash - path);
+    if (len >= buffer_size) {
+        len = buffer_size - 1;
+    }
+    memcpy(buffer, path, len);
+    buffer[len] = '\0';
+    return buffer;
+}
+
+static bool is_js_file(const char *path) {
+    if (!path) {
+        return false;
+    }
+    size_t len = strlen(path);
+    if (len < 3) {
+        return false;
+    }
+    return (strcmp(path + len - 3, ".js") == 0);
+}
+
+static bool walk_directory(const char *path, bool (*on_file)(const char *, void *), void *user_data) {
+    DIR *dir = opendir(path);
+    if (!dir) {
+        fprintf(stderr, "Failed to open directory '%s': %s\n", path, strerror(errno));
+        return false;
+    }
+    struct dirent *entry;
+    bool ok = true;
+    while (ok && (entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        char child_path[PATH_MAX];
+        int written = snprintf(child_path, sizeof(child_path), "%s/%s", path, entry->d_name);
+        if (written < 0 || (size_t)written >= sizeof(child_path)) {
+            fprintf(stderr, "Path too long, skipping '%s/%s'\n", path, entry->d_name);
+            continue;
+        }
+        struct stat st;
+        if (stat(child_path, &st) != 0) {
+            fprintf(stderr, "Failed to stat '%s': %s\n", child_path, strerror(errno));
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            ok = walk_directory(child_path, on_file, user_data);
+        } else if (S_ISREG(st.st_mode)) {
+            if (is_js_file(child_path)) {
+                ok = on_file(child_path, user_data);
+            }
+        }
+    }
+    closedir(dir);
+    return ok;
+}
+
+static bool count_files_callback(const char *path, void *user_data) {
+    (void)path;
+    scan_context_t *ctx = (scan_context_t *)user_data;
+    if (ctx) {
+        ctx->total_js_files++;
+    }
+    return true;
+}
+
+static bool parse_file_callback(const char *path, void *user_data) {
+    scan_context_t *ctx = (scan_context_t *)user_data;
+    if (!ctx) {
+        return false;
+    }
+    captured_diag_t diag = {0};
+    bool ok = parse_file_for_scan(path, &diag);
+    ctx->processed++;
+
+    const char *status = ok ? "SUCCESS" : "ERROR";
+    if (ctx->log_file) {
+        if (ok) {
+            fprintf(ctx->log_file, "%s %s\n", path, status);
+        } else {
+            fprintf(ctx->log_file, "%s %s %u:%u %s\n", path, status, diag.line, diag.column, diag.message[0] ? diag.message : "unknown-error");
+        }
+        fflush(ctx->log_file);
+    }
+
+    if (ok) {
+        printf("[%zu/%zu] %s -> ok\n", ctx->processed, ctx->total_js_files, path);
+    } else {
+        printf("[%zu/%zu] %s -> syntax error at %u:%u %s\n", ctx->processed, ctx->total_js_files, path, diag.line, diag.column, diag.message[0] ? diag.message : "unknown-error");
+    }
+
+    char dir_buffer[PATH_MAX];
+    const char *dir_path = dirname_from_path(path, dir_buffer, sizeof(dir_buffer));
+    folder_stat_t *stat = get_or_create_folder(&ctx->folders, dir_path);
+    if (stat) {
+        if (ok) {
+            stat->success++;
+        } else {
+            stat->failed++;
+        }
+    }
+
+    if (!ok) {
+        ctx->had_error = true;
+    }
+    return true;
+}
+
+static bool run_scan_mode(const cli_options_t *options) {
+    if (!options || !options->scan_dir) {
+        fprintf(stderr, "Scan mode requires --scan-dir.\n");
+        return false;
+    }
+
+    scan_context_t ctx = {0};
+
+    if (!walk_directory(options->scan_dir, count_files_callback, &ctx)) {
+        fprintf(stderr, "Failed while counting files under '%s'.\n", options->scan_dir);
+        return false;
+    }
+
+    if (ctx.total_js_files == 0) {
+        fprintf(stderr, "No .js files found under '%s'.\n", options->scan_dir);
+        return false;
+    }
+
+    ctx.log_file = fopen(options->log_path ? options->log_path : "scan.log", "w");
+    if (!ctx.log_file) {
+        fprintf(stderr, "Failed to open log file '%s': %s\n", options->log_path, strerror(errno));
+        return false;
+    }
+
+    printf("Parsing %zu JavaScript files under '%s' (logging to %s)\n", ctx.total_js_files, options->scan_dir, options->log_path ? options->log_path : "scan.log");
+
+    bool ok = walk_directory(options->scan_dir, parse_file_callback, &ctx);
+    fclose(ctx.log_file);
+
+    printf("\nSummary by directory:\n");
+    for (folder_stat_t *it = ctx.folders; it; it = it->next) {
+        printf("  %s : success=%zu, failed=%zu\n", it->path, it->success, it->failed);
+    }
+
+    free_folder_stats(ctx.folders);
+    return ok && !ctx.had_error;
 }
 
 static const char *token_kind_name(js_token_kind_t kind) {

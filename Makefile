@@ -30,6 +30,8 @@ OBJS := $(SRC:%.c=build/obj/%.o) $(LEXER_GEN:%.c=build/obj/%.o) $(PARSER_GEN:%.c
 TARGET := build/bin/jsparser
 VALID_TEST_CASES := $(wildcard tests/cases/valid/*.js)
 INVALID_TEST_CASES := $(wildcard tests/cases/invalid/*.js)
+SCAN_DIR ?=
+SCAN_LOG ?= scan.log
 
 .PHONY: all clean distclean generated_dirs test
 
@@ -78,3 +80,11 @@ test: $(TARGET)
 			exit 1; \
 		fi; \
 	done
+
+# Recursively parse all .js files under SCAN_DIR and write a log file.
+# Usage: make scan SCAN_DIR=path/to/dir [SCAN_LOG=out.log]
+scan: $(TARGET)
+ifeq ($(strip $(SCAN_DIR)),)
+	$(error SCAN_DIR must be set, e.g. 'make scan SCAN_DIR=examples')
+endif
+	$(TARGET) --scan-dir "$(SCAN_DIR)" --log "$(SCAN_LOG)"

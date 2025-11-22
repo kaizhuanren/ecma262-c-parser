@@ -24,6 +24,7 @@ static js_ast_node_t *make_sequence(js_parser_context_t *ctx, js_ast_node_t *lef
 static js_ast_node_t *make_identifier_from_token(js_parser_context_t *ctx, const js_token_t *token, const YYLTYPE *loc);
 static js_ast_node_t *make_number_from_token(js_parser_context_t *ctx, const js_token_t *token, const YYLTYPE *loc);
 static js_ast_node_t *make_string_from_token(js_parser_context_t *ctx, const js_token_t *token, const YYLTYPE *loc);
+static js_ast_node_t *make_function(js_parser_context_t *ctx, js_ast_node_t *id, js_ast_node_list_t params, js_ast_node_t *body, bool is_expression, const YYLTYPE *loc);
 static void set_token_location(YYLTYPE *yylloc, const js_token_t *token);
 static int js_parser_impllex(YYSTYPE *yylval, YYLTYPE *yylloc, js_parser_context_t *ctx);
 static void js_parser_implerror(YYLTYPE *loc, js_parser_context_t *ctx, const char *msg);
@@ -79,6 +80,7 @@ static void js_parser_implerror(YYLTYPE *loc, js_parser_context_t *ctx, const ch
 %token T_FOR
 %token T_BREAK
 %token T_CONTINUE
+%token T_FUNCTION
 
 %token T_TYPEOF
 %token T_VOID
@@ -136,10 +138,12 @@ static void js_parser_implerror(YYLTYPE *loc, js_parser_context_t *ctx, const ch
 %type <node> return_statement
 %type <node> break_statement
 %type <node> continue_statement
+%type <node> function_declaration
 %type <node> if_statement
 %type <node> while_statement
 %type <node> do_while_statement
 %type <node> for_statement
+%type <node> function_expression
 %type <node> expression
 %type <node> assignment_expression
 %type <node> conditional_expression
@@ -171,6 +175,8 @@ static void js_parser_implerror(YYLTYPE *loc, js_parser_context_t *ctx, const ch
 %type <node_list> argument_list
 %type <node_list> argument_list_opt
 %type <node_list> arguments
+%type <node_list> parameter_list
+%type <node_list> parameter_list_opt
 
 %type <var_kind> variable_declaration_kind
 
@@ -211,6 +217,7 @@ statement_list_opt
 statement
     : block
     | variable_statement
+    | function_declaration
     | expression_statement
     | return_statement
     | if_statement
@@ -393,6 +400,17 @@ continue_statement
               YYABORT;
           }
           node->data.continue_statement.label = NULL;
+          $$ = node;
+      }
+;
+
+function_declaration
+    : T_FUNCTION binding_identifier '(' parameter_list_opt ')' block
+      {
+          js_ast_node_t *node = make_function(ctx, $2, $4, $6, false, &@$);
+          if (!node) {
+              YYABORT;
+          }
           $$ = node;
       }
 ;
@@ -993,6 +1011,25 @@ member_expression
       }
 ;
 
+function_expression
+    : T_FUNCTION binding_identifier '(' parameter_list_opt ')' block
+      {
+          js_ast_node_t *node = make_function(ctx, $2, $4, $6, true, &@$);
+          if (!node) {
+              YYABORT;
+          }
+          $$ = node;
+      }
+    | T_FUNCTION '(' parameter_list_opt ')' block
+      {
+          js_ast_node_t *node = make_function(ctx, NULL, $3, $5, true, &@$);
+          if (!node) {
+              YYABORT;
+          }
+          $$ = node;
+      }
+;
+
 primary_expression
     : T_IDENTIFIER
       {
@@ -1070,6 +1107,7 @@ primary_expression
       }
     | '(' expression ')'
       { $$ = $2; }
+    | function_expression
 ;
 
 arguments
@@ -1097,6 +1135,32 @@ argument_list
       {
           js_ast_node_list_t list = $1;
           if ($3 && !append_node(ctx, &list, $3, &@3)) {
+              YYABORT;
+          }
+          $$ = list;
+      }
+;
+
+parameter_list_opt
+    : /* empty */
+      { $$ = (js_ast_node_list_t){0}; }
+    | parameter_list
+      { $$ = $1; }
+;
+
+parameter_list
+    : binding_identifier
+      {
+          js_ast_node_list_t list = {0};
+          if (!append_node(ctx, &list, $1, &@1)) {
+              YYABORT;
+          }
+          $$ = list;
+      }
+    | parameter_list ',' binding_identifier
+      {
+          js_ast_node_list_t list = $1;
+          if (!append_node(ctx, &list, $3, &@3)) {
               YYABORT;
           }
           $$ = list;
@@ -1196,6 +1260,30 @@ static js_ast_node_t *make_unary(js_parser_context_t *ctx, js_ast_unary_op_t op,
     node->data.unary_expression.op = op;
     node->data.unary_expression.argument = argument;
     node->data.unary_expression.prefix = true;
+    return node;
+}
+
+static js_ast_node_t *make_function(js_parser_context_t *ctx, js_ast_node_t *id, js_ast_node_list_t params, js_ast_node_t *body, bool is_expression, const YYLTYPE *loc) {
+    if (!body) {
+        js_ast_free(id);
+        free_node_list(&params);
+        ctx->had_error = true;
+        return NULL;
+    }
+    js_ast_node_t *node = js_ast_node_new(is_expression ? JS_AST_FUNCTION_EXPRESSION : JS_AST_FUNCTION_DECLARATION, loc_from_yy(loc));
+    if (!node) {
+        parser_report(ctx, loc, JS_PARSER_OOM_MESSAGE);
+        js_ast_free(id);
+        free_node_list(&params);
+        js_ast_free(body);
+        return NULL;
+    }
+    node->data.function.id = id;
+    node->data.function.params = params;
+    node->data.function.body = body;
+    node->data.function.is_async = false;
+    node->data.function.is_generator = false;
+    node->data.function.is_expression = is_expression;
     return node;
 }
 
@@ -1382,6 +1470,8 @@ static int js_parser_impllex(YYSTYPE *yylval, YYLTYPE *yylloc, js_parser_context
             return T_BREAK;
         case JS_TOK_KW_CONTINUE:
             return T_CONTINUE;
+        case JS_TOK_KW_FUNCTION:
+            return T_FUNCTION;
         case JS_TOK_KW_TYPEOF:
             return T_TYPEOF;
         case JS_TOK_KW_VOID:
