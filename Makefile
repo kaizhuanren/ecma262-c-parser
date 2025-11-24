@@ -1,7 +1,8 @@
 # Default tools (override via environment)
 CC ?= cc
 RE2C ?= re2c
-BISON ?= bison
+# Prefer Homebrew bison (supports %code/GLR); override via environment if needed.
+BISON ?= /opt/homebrew/opt/bison/bin/bison
 RM ?= rm -f
 RMDIR ?= rm -rf
 MKDIR_P ?= mkdir -p

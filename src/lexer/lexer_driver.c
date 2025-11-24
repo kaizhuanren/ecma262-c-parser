@@ -91,6 +91,33 @@ static bool token_disallows_asi_before(js_token_kind_t kind) {
     }
 }
 
+static bool token_disallows_regex(js_token_kind_t kind) {
+    switch (kind) {
+        case JS_TOK_IDENTIFIER:
+        case JS_TOK_NUMBER:
+        case JS_TOK_STRING:
+        case JS_TOK_TEMPLATE_TAIL:
+        case JS_TOK_TRUE:
+        case JS_TOK_FALSE:
+        case JS_TOK_NULL:
+        case JS_TOK_THIS:
+        case JS_TOK_SUPER:
+        case JS_TOK_REGEX:
+        case JS_TOK_RPAREN:
+        case JS_TOK_RBRACKET:
+        case JS_TOK_RBRACE:
+        case JS_TOK_PLUS_PLUS:
+        case JS_TOK_MINUS_MINUS:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool token_allows_regex(js_token_kind_t kind) {
+    return !token_disallows_regex(kind);
+}
+
 static bool keyword_requires_line_terminator_guard(js_token_kind_t kind) {
     switch (kind) {
         case JS_TOK_KW_RETURN:
@@ -136,6 +163,7 @@ bool js_lexer_reset(js_lexer_t *lexer, const char *source) {
     lexer->state.token_column = 1;
     lexer->state.saw_newline = false;
     lexer->state.prev_had_newline = false;
+    lexer->state.allow_regex = true;
     lexer->has_lookahead = false;
     lexer->force_semi_after_keyword = false;
     lexer->previous_token_kind = JS_TOK_EOF;
@@ -176,6 +204,8 @@ bool js_lexer_next(js_lexer_t *lexer, js_token_t *out_token) {
     if (lexer->previous_token_kind == JS_TOK_SEMICOLON) {
         lexer->force_semi_after_keyword = false;
     }
+
+    lexer->state.allow_regex = token_allows_regex(lexer->previous_token_kind);
 
     js_token_t token;
     if (!js_lexer_scan(lexer, &token)) {

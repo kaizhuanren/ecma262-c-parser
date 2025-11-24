@@ -195,6 +195,89 @@ int js_lexer_scan(js_lexer_t *lexer, js_token_t *out_token) {
 
         const char *token_start = cursor;
 
+        /* Manual handling for template literals (scan until matching backtick, handling ${...}). */
+        if (*cursor == '`') {
+            const char *p = cursor + 1;
+            int brace_depth = 0;
+            bool terminated = false;
+            while (p < limit) {
+                char ch = *p++;
+                if (ch == '\\') {
+                    if (p < limit) {
+                        ++p;
+                    }
+                    continue;
+                }
+                if (ch == '\r' || ch == '\n') {
+                    lexer->state.saw_newline = true;
+                }
+                if (ch == '`' && brace_depth == 0) {
+                    terminated = true;
+                    break;
+                }
+                if (ch == '$' && p < limit && *p == '{') {
+                    ++brace_depth;
+                    ++p;
+                    continue;
+                }
+                if (ch == '}' && brace_depth > 0) {
+                    --brace_depth;
+                }
+            }
+            if (!terminated) {
+                cursor = p;
+                js_lexer_emit_error(lexer, "Unterminated template literal");
+                js_lexer_set_token(lexer, out_token, JS_TOK_ERROR, token_start, cursor);
+                break;
+            }
+            cursor = p;
+            js_lexer_set_token(lexer, out_token, JS_TOK_STRING, token_start, cursor);
+            break;
+        }
+
+        /* Manual handling for regex literal when allowed. */
+        if (lexer->state.allow_regex && *cursor == '/') {
+            const char *p = cursor + 1;
+            bool in_class = false;
+            bool terminated = false;
+            while (p < limit) {
+                char ch = *p++;
+                if (ch == '\\') {
+                    if (p < limit) {
+                        ++p;
+                    }
+                    continue;
+                }
+                if (ch == '[') {
+                    in_class = true;
+                } else if (ch == ']' && in_class) {
+                    in_class = false;
+                } else if (ch == '/' && !in_class) {
+                    terminated = true;
+                    break;
+                } else if (ch == '\n' || ch == '\r') {
+                    break;
+                }
+            }
+            if (!terminated) {
+                cursor = p;
+                js_lexer_emit_error(lexer, "Unterminated regular expression literal");
+                js_lexer_set_token(lexer, out_token, JS_TOK_ERROR, token_start, cursor);
+                break;
+            }
+            while (p < limit) {
+                char flag = *p;
+                if ((flag >= 'a' && flag <= 'z') || (flag >= 'A' && flag <= 'Z')) {
+                    ++p;
+                } else {
+                    break;
+                }
+            }
+            cursor = p;
+            js_lexer_set_token(lexer, out_token, JS_TOK_REGEX, token_start, cursor);
+            break;
+        }
+
 #define YYCTYPE unsigned char
 #define YYCURSOR cursor
 #define YYMARKER marker
@@ -240,20 +323,6 @@ int js_lexer_scan(js_lexer_t *lexer, js_token_t *out_token) {
         block_comment {
             js_lexer_update_position(lexer, token_start, cursor);
             continue;
-        }
-
-        "/*" {
-            const char *p = cursor;
-            while (p < limit) {
-                char ch = *p++;
-                if (ch == '\n') {
-                    lexer->state.saw_newline = true;
-                }
-            }
-            cursor = limit;
-            js_lexer_emit_error(lexer, "Unterminated block comment");
-            js_lexer_set_token(lexer, out_token, JS_TOK_ERROR, token_start, cursor);
-            break;
         }
 
         "..." {

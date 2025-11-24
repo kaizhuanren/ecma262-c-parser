@@ -459,16 +459,6 @@ static bool parse_file_for_scan(const char *path, captured_diag_t *diag_out) {
     return ok;
 }
 
-static char *dup_string_slice(const char *start, size_t len) {
-    char *out = (char *)malloc(len + 1);
-    if (!out) {
-        return NULL;
-    }
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return out;
-}
-
 static folder_stat_t *get_or_create_folder(folder_stat_t **head, const char *dir_path) {
     folder_stat_t *node = *head;
     while (node) {

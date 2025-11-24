@@ -17,6 +17,7 @@ typedef struct {
     uint32_t token_column;
     bool saw_newline;
     bool prev_had_newline;
+    bool allow_regex;
 } js_lexer_state_t;
 
 struct js_lexer_t {
